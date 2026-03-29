@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metalquant"
+version = "0.1.0"
+description = "Apple Silicon-first LLM inference optimization for MLX"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "mlx>=0.31.0",
+  "mlx-lm>=0.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["metalquant*"]
