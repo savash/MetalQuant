@@ -1,173 +1,217 @@
 # MetalQuant
 
-MetalQuant is an Apple Silicon-first LLM inference optimization project for MLX.
+**KV cache compression for local LLMs on Apple Silicon.**
 
-The project is focused on KV-cache efficiency, long-context behavior, and decode-path performance for local inference workloads on Apple hardware.
+MetalQuant implements and validates the [TurboQuant algorithm](https://arxiv.org/abs/2504.19874) on MLX, making it practical for developers running models on a 16GB Mac. We also document a critical failure mode the paper doesn't mention — and the fix for it.
 
-## Goals
+---
 
-- benchmark MLX inference reproducibly
-- measure KV-cache and decode-path behavior honestly
-- develop optimized cache backends for local LLM workloads
-- improve long-context efficiency on Apple Silicon
-- keep results developer-verifiable and easy to reproduce
+## What this does
 
-## Status
+When an LLM generates text, it stores a running memory of the conversation called a **KV cache**. On a 16GB Mac, this cache fills up fast — typically limiting you to a few thousand tokens of context.
 
-MetalQuant is in early development.
+MetalQuant compresses the KV cache while keeping output quality intact, letting you run longer conversations and larger contexts on the same hardware.
 
-Current repository contents include:
+**Measured results on M4 Mac Mini 16GB (`Meta-Llama-3.1-8B-Instruct-8bit`):**
 
-- baseline benchmark runner
-- bootstrap/setup flow
-- package scaffold
-- architecture notes
-- roadmap
+| Backend | KV memory/token | Compression | Decode speed | Output quality |
+|---|---|---|---|---|
+| Baseline (fp16) | 256 bytes | 1.0× | 61.8 tok/s | reference |
+| INT8 | 132 bytes | **1.9×** | 57.6 tok/s | ✅ matches baseline |
+| TQ4 (4-bit TurboQuant) | 68 bytes | **3.8×** | 52.5 tok/s | ✅ matches baseline |
+| TQ2 (2-bit TurboQuant) | 36 bytes | **7.1×** | 52.9 tok/s | ✅ correct output |
 
-## Requirements
+> **Note**: compression numbers assume bit-packed index storage. The algorithm is fully implemented and validated; bit packing is the remaining engineering step to realise the full numbers in practice.
 
-- Apple Silicon Mac
-- macOS
-- Python 3.11+
-- `mlx`
-- `mlx-lm`
-- internet access for first-time model downloads
+---
 
-## Repository layout
+## Key findings
 
-```text
-metalquant/
-├── benchmarks/
-│   ├── prompts.py
-│   └── run_baseline.py
-├── docs/
-│   ├── ARCHITECTURE.md
-│   └── ROADMAP.md
-├── results/
-├── scripts/
-│   └── bootstrap.sh
-├── src/
-│   └── metalquant/
-│       ├── __init__.py
-│       ├── config.py
-│       └── hardware.py
-├── .gitignore
-├── LICENSE
-├── NOTICE
-├── pyproject.toml
-└── README.md
+### 1. TurboQuant works on Apple Silicon
+
+At 2-bit (TQ2), the KV cache shrinks by **7.1×** and the model still generates correct, coherent code. At 4-bit (TQ4), output is nearly identical to the uncompressed baseline.
+
+### 2. It silently fails on 4-bit weight-quantized models
+
+This is something the paper doesn't cover. When you run TurboQuant on a 4-bit weight-quantized model (e.g. `Qwen2.5-7B-Instruct-4bit`), it produces garbage output with no warning.
+
+**Root cause**: 4-bit weight quantization inflates KV vector norms from ~18 to ~274. TurboQuant's reconstruction error scales as `norm²`, making it 72× worse than INT8 at that point.
+
+**Diagnostic**: before using any TurboQuant backend, check your model's KV norms:
+
+```python
+# norms should be < 50 for TurboQuant to work correctly
+# norms > 50 indicate 4-bit weight quantization artifacts
 ```
 
-## Installation
+See `docs/DEVLOG.md` for the full diagnostic script.
 
-### Bootstrap
+### 3. Fix for 4-bit models: fp16-outlier + TQ
+
+For models with inflated KV norms, we developed `TurboQuantFp16OutlierCache`:
+- Run a calibration pass to identify the 32 highest-variance channels
+- Store those 32 channels at full fp16 precision (they hold all the large-norm energy)
+- Apply TurboQuant to the remaining 96 channels (norms ~15, compression works)
+
+Result on `Qwen2.5-7B-4bit`: **4.6× better reconstruction accuracy than INT8**, generation quality matches the uncompressed baseline.
+
+---
+
+## Quick start
+
+### Requirements
+
+- Apple Silicon Mac (M1 or later)
+- macOS 13+
+- Python 3.11+
+- ~10GB free disk space for model weights
+
+### Install
 
 ```bash
-cd metalquant
+git clone https://github.com/savash/MetalQuant
+cd MetalQuant
 ./scripts/bootstrap.sh
 source .venv/bin/activate
 ```
 
-If `uv` is not installed:
+### Run the benchmark
 
 ```bash
-curl -L https://astral.sh/uv/install.sh | sh
+# Baseline — no compression
+python benchmarks/run_experiment.py \
+  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
+  --cache-backend baseline \
+  --out results/baseline.json
+
+# INT8 compression (~2× smaller KV cache)
+python benchmarks/run_experiment.py \
+  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
+  --cache-backend int8 \
+  --out results/int8.json
+
+# TQ4 compression (~4× smaller KV cache)
+python benchmarks/run_experiment.py \
+  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
+  --cache-backend tq4 \
+  --out results/tq4.json
+
+# TQ2 compression (~7× smaller KV cache)
+python benchmarks/run_experiment.py \
+  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
+  --cache-backend tq2 \
+  --out results/tq2.json
+
+# Compare any two results
+python benchmarks/compare_results.py results/baseline.json results/tq2.json
 ```
 
-### Manual install
+### For 4-bit models (Qwen, Mistral-4bit, etc.)
 
 ```bash
-cd metalquant
-uv python install 3.11
-uv venv --python 3.11 .venv
-source .venv/bin/activate
-python -m ensurepip --upgrade
-python -m pip install -U pip setuptools wheel
-python -m pip install -e .
-```
-
-## Running the baseline benchmark
-
-```bash
-cd metalquant
-source .venv/bin/activate
-PYTHONPATH=src python benchmarks/run_baseline.py \
+# Step 1: calibrate to identify outlier channels
+python benchmarks/run_calibrate.py \
   --model mlx-community/Qwen2.5-7B-Instruct-4bit \
-  --max-new-tokens 64 \
-  --out results/baseline-qwen25-7b.json
+  --out results/calibration.json
+
+# Step 2: run with the fp16-outlier backend
+python benchmarks/run_experiment.py \
+  --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+  --cache-backend fp16-outlier \
+  --calibration results/calibration.json \
+  --out results/fp16-outlier.json
 ```
 
-## Running with a different model
+---
 
-Any model loadable by `mlx-lm` can be used.
+## Recommended model for 16GB Mac
 
-Example:
-
-```bash
-PYTHONPATH=src python benchmarks/run_baseline.py \
-  --model mlx-community/Qwen2.5-1.5B-Instruct-4bit \
-  --max-new-tokens 96 \
-  --out results/qwen25-1_5b-baseline.json
+```
+mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
 ```
 
-## Current baseline
+- Weights: ~8GB — fits comfortably with 6GB left for KV cache
+- KV norms are healthy (~18) — TurboQuant works correctly
+- Same model family the paper benchmarked against
+- Strong coding and instruction-following quality
 
-Current native MetalQuant baseline (`results/baseline-qwen25-7b.json`):
+---
 
-- model: `mlx-community/Qwen2.5-7B-Instruct-4bit`
-- max new tokens: `64`
-- average prefill throughput: `78.98 tok/s`
-- average decode throughput: `24.66 tok/s`
-- average decode latency: `41.20 ms`
-- average cache size after decode: `14,680,064 bytes`
+## Repository layout
 
-These numbers come from the current baseline benchmark runner in this repository.
-
-## Benchmark output
-
-Current benchmark output includes:
-
-- benchmark configuration
-- hardware metadata
-- per-prompt outputs
-- prefill throughput
-- decode throughput
-- average decode latency
-- cache size after decode
-
-Outputs are written as JSON to support scripted comparisons and repeatable reporting.
-
-Example summary payload:
-
-```json
-{
-  "summary": {
-    "avg_prefill_tok_per_s": 78.98479418494838,
-    "avg_decode_tok_per_s": 24.663847482740795,
-    "avg_decode_latency_ms": 41.20268941630249,
-    "avg_cache_bytes_after_decode": 14680064.0
-  }
-}
+```
+MetalQuant/
+├── benchmarks/
+│   ├── run_experiment.py     # benchmark runner (all backends)
+│   ├── run_calibrate.py      # outlier channel calibration
+│   ├── run_baseline.py       # simple baseline runner
+│   ├── compare_results.py    # diff two result JSONs
+│   └── prompts.py
+├── docs/
+│   ├── DEVLOG.md             # full research journal — what worked, what didn't, why
+│   ├── ARCHITECTURE.md
+│   └── ROADMAP.md
+├── results/                  # benchmark outputs (gitignored)
+├── scripts/
+│   └── bootstrap.sh
+└── src/metalquant/
+    ├── cache.py              # backend factory: make_cache(model, backend="tq2")
+    ├── cache_quantized.py    # INT8 backend
+    ├── cache_turboquant.py   # TurboQuant core (Q_mse algorithm)
+    ├── cache_turboquant_v2.py # outlier-aware TurboQuant
+    ├── cache_fp16outlier.py  # fp16 outlier + TQ regular (fix for 4-bit models)
+    └── calibrate.py          # per-channel variance calibration
 ```
 
-## Development approach
+---
 
-MetalQuant follows a simple rule:
+## How to use the cache backends in your own code
 
-1. measure the baseline
-2. profile the bottleneck
-3. change one thing
-4. measure again
+```python
+from mlx_lm import load
+from metalquant.cache import make_cache
 
-## Documentation
+model, tokenizer = load("mlx-community/Meta-Llama-3.1-8B-Instruct-8bit")
 
-- `docs/ARCHITECTURE.md`
-- `docs/ROADMAP.md`
+# Pick a backend: "baseline", "int8", "tq2", "tq4", "fp16-outlier"
+cache = make_cache(model, backend="tq2")
+
+# Use exactly like a normal mlx-lm cache
+input_ids = mx.array(tokenizer.encode(prompt))[None]
+logits = model(input_ids, cache=cache)
+```
+
+---
+
+## What's next
+
+- **Bit packing** — pack 2-bit indices into bytes to realise the full 7.1× memory reduction in practice (currently algorithm is correct, storage is not yet packed)
+- **Perplexity benchmarks** — WikiText-2 and HumanEval scores for rigorous quality comparison
+- **Larger models** — test on Qwen2.5-Coder-14B and other coding-focused models
+- **More architectures** — validate KV norm behaviour across Mistral, Gemma, Phi
+
+---
+
+## Research journal
+
+The full story of what we tried, what broke, and what we learned is in [`docs/DEVLOG.md`](docs/DEVLOG.md). It covers every bug hit, every failed approach, the math behind the failure mode, and the reasoning behind each fix. Written to be useful to anyone who wants to reproduce or extend this work.
+
+---
+
+## Background
+
+This project implements and extends:
+
+> **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate**
+> Zandieh et al., arXiv 2504.19874, April 2025
+
+The algorithm uses random orthogonal rotation + Max-Lloyd scalar quantization to compress KV cache vectors near the theoretical optimum for their bit rate.
+
+---
 
 ## Author
 
-**Savash Kalay**  
-<savash@mac.com>
+**Savash Kalay** — [savash@mac.com](mailto:savash@mac.com)
 
 ## License
 
