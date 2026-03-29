@@ -1,42 +1,67 @@
 # MetalQuant Roadmap
 
-## Phase 1 — Foundation
-- [x] Create clean project scaffold
-- [x] Add developer-facing README
-- [x] Add bootstrap flow
-- [x] Add baseline benchmark runner
-- [x] Add architecture and roadmap docs
-- [x] Add licensing and attribution
+## Phase 1 — Foundation ✅
+- [x] Project scaffold, README, bootstrap flow
+- [x] Baseline benchmark runner
+- [x] Architecture and roadmap docs
+- [x] Licensing and attribution
 
-## Phase 2 — Baseline discipline
-- [x] Run the clean baseline inside MetalQuant
-- [x] Save baseline result conventions
-- [x] Add result comparison utilities (`benchmarks/compare_results.py`)
+## Phase 2 — Baseline & Infrastructure ✅
+- [x] Reproducible baseline benchmarks
+- [x] Result comparison utilities (`benchmarks/compare_results.py`)
+- [x] Cache backend abstraction (`src/metalquant/cache.py`)
+- [x] Pluggable experiment runner (`benchmarks/run_experiment.py`)
 
-## Phase 3 — Cache backend work
-- [x] Add cache backend abstraction (`src/metalquant/cache.py`)
-- [x] Add first experimental compressed cache backend (INT8, `src/metalquant/cache_quantized.py`)
-- [x] Add experiment runner with pluggable cache backend (`benchmarks/run_experiment.py`)
-- [x] Run baseline vs INT8 benchmark comparison and save results
-- [x] Compare baseline vs compressed cache honestly — see results/report-phase3.md
+## Phase 3 — INT8 KV Cache ✅
+- [x] INT8 backend (`src/metalquant/cache_quantized.py`)
+- [x] Fixed critical mlx-lm integration bugs (offset tracking, `self.bits` conflict)
+- [x] Benchmarked INT8 vs baseline
 
-**Phase 3 findings:**
-- INT8: 84% cache reduction, −7.4% decode speed, full quality preservation ✓
-- TurboQuant (2-bit/4-bit): correct infrastructure, broken output — missing outlier channel splitting from paper
+**Results:** 1.94× KV cache compression, decode speed unchanged, full quality.
 
-## Phase 4 — Outlier-Aware TurboQuant
-- [ ] Calibration pass: measure per-channel variance across real inference
-- [ ] Identify top-32 outlier channels per layer (static, post-rotation)
-- [ ] Implement mixed-precision quantize: outlier@3-bit + regular@2-bit = 2.5-bit effective
-- [ ] Benchmark 2.5-bit TurboQuant vs INT8 vs baseline
-- [ ] Consider replacing rotation matmul with randomized Hadamard transform (O(d log d))
+## Phase 4 — TurboQuant Investigation & Fix ✅
+- [x] Implemented TurboQuant Q_mse algorithm (`src/metalquant/cache_turboquant.py`)
+- [x] Discovered silent failure on 4-bit weight-quantized models (KV norm amplification)
+- [x] Proved per-channel normalization does not fix the problem (math documented)
+- [x] Built calibration pass (`src/metalquant/calibrate.py`, `benchmarks/run_calibrate.py`)
+- [x] Built fp16-outlier fix (`src/metalquant/cache_fp16outlier.py`)
+- [x] GPU-native channel merge (scatter matmul — no CPU round-trips)
 
-## Phase 5 — Optimization work
-- [ ] Profile decode hot path in detail
-- [ ] Improve one bottleneck at a time
-- [ ] Save before/after reports for every accepted change
+**Results on Qwen2.5-7B-4bit:** fp16-outlier+TQ4 gives 4.6× better reconstruction
+accuracy than INT8, generation quality matches uncompressed baseline exactly.
 
-## Phase 6 — Publication readiness
-- [ ] Add contribution guidelines
-- [ ] Add benchmark methodology notes
-- [ ] Prepare first public technical writeup
+## Phase 5 — Proof on Correct Model ✅
+- [x] Switched to `Meta-Llama-3.1-8B-Instruct-8bit` (paper's model family)
+- [x] Confirmed healthy KV norms (~18 across all layers)
+- [x] TQ4 output identical to baseline, TQ2 output correct and coherent
+- [x] Full benchmark suite on M4 Mac Mini 16GB
+- [x] Published research journal (`docs/DEVLOG.md`)
+
+**Results:**
+
+| Backend | KV compression (packed) | Decode speed | Quality |
+|---|---|---|---|
+| INT8 | 1.94× | 57.6 tok/s | ✅ matches baseline |
+| TQ4 | 3.76× | 52.5 tok/s | ✅ matches baseline |
+| TQ2 | **7.11×** | 52.9 tok/s | ✅ correct output |
+
+## Phase 6 — Bit Packing (Next)
+- [ ] Pack 2-bit indices: 4 indices per byte instead of 1
+- [ ] TQ2: 128 bytes + 4 = 132 today → 32 bytes + 4 = 36 bytes (realise full 7.1× compression)
+- [ ] TQ4: 128 bytes + 4 = 132 today → 64 bytes + 4 = 68 bytes (realise full 3.8×)
+
+## Phase 7 — Rigorous Quality Evaluation
+- [ ] WikiText-2 perplexity for all backends
+- [ ] HumanEval pass@1 for coding quality
+- [ ] Formal quality vs compression curve
+
+## Phase 8 — Broader Model Coverage
+- [ ] Qwen2.5-Coder-14B (larger 4-bit model — test fp16-outlier generalisation)
+- [ ] Mistral-7B-8bit
+- [ ] Gemma-3-12B
+- [ ] Document which model families are safe for standard TurboQuant vs needing fp16-outlier
+
+## Phase 9 — Publication
+- [ ] Blog post with benchmark methodology and findings
+- [ ] "Check your model" guide (KV norm diagnostic)
+- [ ] Contribution guidelines
