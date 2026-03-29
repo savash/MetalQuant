@@ -38,8 +38,10 @@ Current repository contents include:
 ```text
 metalquant/
 ├── benchmarks/
+│   ├── compare_results.py   # compare two JSON result files
 │   ├── prompts.py
-│   └── run_baseline.py
+│   ├── run_baseline.py      # baseline (unmodified KVCache)
+│   └── run_experiment.py    # pluggable cache backend runner
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   └── ROADMAP.md
@@ -49,6 +51,8 @@ metalquant/
 ├── src/
 │   └── metalquant/
 │       ├── __init__.py
+│       ├── cache.py          # cache backend abstraction + make_cache()
+│       ├── cache_quantized.py  # INT8 quantized KV cache backend
 │       ├── config.py
 │       └── hardware.py
 ├── .gitignore
@@ -148,6 +152,27 @@ Example summary payload:
     "avg_cache_bytes_after_decode": 14680064.0
   }
 }
+```
+
+## Running an experiment with a different cache backend
+
+```bash
+PYTHONPATH=src python benchmarks/run_experiment.py \
+  --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+  --cache-backend int8 \
+  --max-new-tokens 64 \
+  --out results/int8-cache-qwen25-7b.json
+```
+
+Available `--cache-backend` values: `baseline`, `int8`
+
+## Comparing two results
+
+```bash
+python benchmarks/compare_results.py \
+  results/baseline-qwen25-7b.json \
+  results/int8-cache-qwen25-7b.json \
+  --md results/baseline-vs-int8.md
 ```
 
 ## Development approach
