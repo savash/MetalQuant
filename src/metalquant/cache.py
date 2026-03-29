@@ -42,12 +42,15 @@ class BaselineCacheBackend(KVCache):
     pass
 
 
-def make_cache(model, backend: str = "baseline") -> list:
+def make_cache(model, backend: str = "baseline", calibration: list | None = None) -> list:
     """Create a per-layer cache list for *model* using the named backend.
 
     Args:
         model: An mlx-lm model with a .layers attribute.
-        backend: One of "baseline", "int8".  More will be added.
+        backend: One of "baseline", "int8", "turboquant"/"tq2"/"tq3"/"tq4",
+            "tq-outlier".
+        calibration: For "tq-outlier" — list of per-layer dicts from
+            metalquant.calibrate.load_calibration().
 
     Returns:
         A list of cache objects, one per transformer layer.
@@ -61,17 +64,75 @@ def make_cache(model, backend: str = "baseline") -> list:
 
     if backend in ("turboquant", "tq2"):
         from metalquant.cache_turboquant import TurboQuantMSECache
-        return [TurboQuantMSECache(bits=2, layer_idx=i) for i in range(len(model.layers))]
+        k_stds = [calibration[i]["k_ch_stds"] for i in range(len(model.layers))] if calibration else [None] * len(model.layers)
+        v_stds = [calibration[i]["v_ch_stds"] for i in range(len(model.layers))] if calibration else [None] * len(model.layers)
+        return [TurboQuantMSECache(bits=2, layer_idx=i, k_ch_stds=k_stds[i], v_ch_stds=v_stds[i]) for i in range(len(model.layers))]
 
     if backend == "tq3":
         from metalquant.cache_turboquant import TurboQuantMSECache
-        return [TurboQuantMSECache(bits=3, layer_idx=i) for i in range(len(model.layers))]
+        k_stds = [calibration[i]["k_ch_stds"] for i in range(len(model.layers))] if calibration else [None] * len(model.layers)
+        v_stds = [calibration[i]["v_ch_stds"] for i in range(len(model.layers))] if calibration else [None] * len(model.layers)
+        return [TurboQuantMSECache(bits=3, layer_idx=i, k_ch_stds=k_stds[i], v_ch_stds=v_stds[i]) for i in range(len(model.layers))]
 
     if backend == "tq4":
         from metalquant.cache_turboquant import TurboQuantMSECache
-        return [TurboQuantMSECache(bits=4, layer_idx=i) for i in range(len(model.layers))]
+        k_stds = [calibration[i]["k_ch_stds"] for i in range(len(model.layers))] if calibration else [None] * len(model.layers)
+        v_stds = [calibration[i]["v_ch_stds"] for i in range(len(model.layers))] if calibration else [None] * len(model.layers)
+        return [TurboQuantMSECache(bits=4, layer_idx=i, k_ch_stds=k_stds[i], v_ch_stds=v_stds[i]) for i in range(len(model.layers))]
+
+    if backend == "tq-outlier":
+        from metalquant.cache_turboquant_v2 import TurboQuantOutlierCache
+        if calibration is None:
+            raise ValueError(
+                "tq-outlier requires calibration data. "
+                "Run benchmarks/run_calibrate.py first and pass --calibration <path>."
+            )
+        return [
+            TurboQuantOutlierCache(
+                outlier_channels=calibration[i]["outlier_channels"],
+                bits_outlier=3,
+                bits_regular=2,
+                layer_idx=i,
+                k_ch_stds=calibration[i].get("k_ch_stds"),
+                v_ch_stds=calibration[i].get("v_ch_stds"),
+            )
+            for i in range(len(model.layers))
+        ]
+
+    if backend in ("fp16-outlier", "tq-fp16"):
+        from metalquant.cache_fp16outlier import TurboQuantFp16OutlierCache
+        if calibration is None:
+            raise ValueError(
+                "fp16-outlier requires calibration data. "
+                "Run benchmarks/run_calibrate.py first and pass --calibration <path>."
+            )
+        return [
+            TurboQuantFp16OutlierCache(
+                outlier_channels=calibration[i]["outlier_channels"],
+                bits=4,
+                layer_idx=i,
+            )
+            for i in range(len(model.layers))
+        ]
+
+    if backend == "fp16-outlier-tq2":
+        from metalquant.cache_fp16outlier import TurboQuantFp16OutlierCache
+        if calibration is None:
+            raise ValueError(
+                "fp16-outlier-tq2 requires calibration data. "
+                "Run benchmarks/run_calibrate.py first and pass --calibration <path>."
+            )
+        return [
+            TurboQuantFp16OutlierCache(
+                outlier_channels=calibration[i]["outlier_channels"],
+                bits=2,
+                layer_idx=i,
+            )
+            for i in range(len(model.layers))
+        ]
 
     raise ValueError(
         f"Unknown cache backend: {backend!r}.  "
-        f"Valid: baseline, int8, turboquant (tq2), tq3, tq4"
+        f"Valid: baseline, int8, turboquant (tq2), tq3, tq4, tq-outlier, "
+        f"fp16-outlier, fp16-outlier-tq2"
     )

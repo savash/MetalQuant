@@ -24,6 +24,7 @@ from mlx_lm import load
 
 from prompts import PROMPTS
 from metalquant.cache import make_cache
+from metalquant.calibrate import load_calibration
 from metalquant.config import BenchmarkConfig
 from metalquant.hardware import detect_hardware
 
@@ -42,8 +43,9 @@ def cache_nbytes(cache_list) -> int:
     return total
 
 
-def run_one(model, tokenizer, prompt: str, max_new_tokens: int, cache_backend: str) -> dict:
-    cache_list = make_cache(model, backend=cache_backend)
+def run_one(model, tokenizer, prompt: str, max_new_tokens: int, cache_backend: str,
+            calibration=None) -> dict:
+    cache_list = make_cache(model, backend=cache_backend, calibration=calibration)
     input_ids = mx.array(tokenizer.encode(prompt))[None]
 
     rss_before = rss_bytes()
@@ -95,17 +97,29 @@ def main() -> None:
     parser.add_argument(
         "--cache-backend",
         default="baseline",
-        choices=["baseline", "int8", "turboquant", "tq2", "tq3", "tq4"],
+        choices=[
+            "baseline", "int8",
+            "turboquant", "tq2", "tq3", "tq4",
+            "tq-outlier",
+            "fp16-outlier", "tq-fp16", "fp16-outlier-tq2",
+        ],
         help="Cache backend to use (default: baseline)",
     )
+    parser.add_argument("--calibration", default=None,
+                        help="Path to calibration JSON (required for tq-outlier, fp16-outlier)")
     parser.add_argument("--out", default="results/experiment.json")
     args = parser.parse_args()
 
     config = BenchmarkConfig(model=args.model, max_new_tokens=args.max_new_tokens)
     model, tokenizer = load(config.model)
 
+    calibration = None
+    if args.calibration:
+        calibration = load_calibration(args.calibration)
+
     runs = [
-        run_one(model, tokenizer, prompt, config.max_new_tokens, args.cache_backend)
+        run_one(model, tokenizer, prompt, config.max_new_tokens, args.cache_backend,
+                calibration=calibration)
         for prompt in PROMPTS
     ]
     summary = {

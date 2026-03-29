@@ -81,19 +81,34 @@ class TurboQuantMSECache(KVCache):
         bits: Bits per coordinate.  Must be in {1, 2, 3, 4}.  Default: 2.
         layer_idx: Used to seed the rotation matrix so each layer gets an
             independent random rotation.  Default: 0.
+        k_ch_stds: Per-channel stds for K vectors from calibration (length D).
+            When provided, each channel is divided by its std before L2
+            normalization.  This reduces effective L2 norm from ~274 to
+            ~sqrt(D) ≈ 11.3, cutting final MSE by ~600×.
+        v_ch_stds: Per-channel stds for V vectors (same rationale as above).
     """
 
-    def __init__(self, bits: int = 2, layer_idx: int = 0) -> None:
+    def __init__(
+        self,
+        bits: int = 2,
+        layer_idx: int = 0,
+        k_ch_stds: list[float] | None = None,
+        v_ch_stds: list[float] | None = None,
+    ) -> None:
         super().__init__()
         if bits not in _CENTROIDS_N01:
             raise ValueError(f"bits must be one of {list(_CENTROIDS_N01.keys())}, got {bits}")
         self.tq_bits = bits
         self._layer_idx = layer_idx
+        self._k_ch_stds_raw = k_ch_stds  # stored as list; converted to mx lazily
+        self._v_ch_stds_raw = v_ch_stds
 
         # Initialized lazily on first update_and_fetch call (need head_dim).
         self._rotation: mx.array | None = None       # (D, D) float32
         self._codebook: mx.array | None = None       # (2^bits,) float32
         self._head_dim: int | None = None
+        self._k_ch_stds: mx.array | None = None      # (D,) float32
+        self._v_ch_stds: mx.array | None = None      # (D,) float32
 
         # Accumulated quantized cache storage.
         # Shape: (B, H, S, D)  dtype: uint8
@@ -117,50 +132,71 @@ class TurboQuantMSECache(KVCache):
         Q = _make_rotation(head_dim, seed=42 + self._layer_idx)
         self._rotation = mx.array(Q)   # (D, D)
 
+        if self._k_ch_stds_raw is not None:
+            self._k_ch_stds = mx.array(
+                np.array(self._k_ch_stds_raw, dtype=np.float32)
+            )  # (D,)
+        if self._v_ch_stds_raw is not None:
+            self._v_ch_stds = mx.array(
+                np.array(self._v_ch_stds_raw, dtype=np.float32)
+            )  # (D,)
+
     # ------------------------------------------------------------------
     # Quantization helpers
     # ------------------------------------------------------------------
 
-    def _quantize(self, x: mx.array) -> tuple[mx.array, mx.array]:
+    def _quantize(
+        self, x: mx.array, ch_stds: mx.array | None
+    ) -> tuple[mx.array, mx.array]:
         """Quantize a float16 K or V tensor to TurboQuant_mse format.
 
+        When ch_stds is provided, applies per-channel normalization before
+        L2 normalization.  The stored scale is the L2 norm of the
+        per-channel-normalized vector (not the original).  On dequantize,
+        the channel stds are reapplied to recover the original scale.
+
         Args:
-            x: shape (B, H, S, D)
+            x:        shape (B, H, S, D)
+            ch_stds:  (D,) float32, or None to skip per-channel normalization
 
         Returns:
             indices: uint8, shape (B, H, S, D)  — index into codebook
-            scales:  float32, shape (B, H, S, 1) — L2 norms for rescaling
+            scales:  float32, shape (B, H, S, 1) — L2 norms after ch-norm
         """
         B, H, S, D = x.shape
+        x_f32 = x.astype(mx.float32)
+
+        # 0. Per-channel normalization (optional).
+        if ch_stds is not None:
+            x_f32 = x_f32 / ch_stds  # broadcast (D,) over (B,H,S,D)
 
         # 1. L2 norm for rescaling.
-        norms = mx.linalg.norm(x.astype(mx.float32), axis=-1, keepdims=True)  # (B, H, S, 1)
+        norms = mx.linalg.norm(x_f32, axis=-1, keepdims=True)  # (B, H, S, 1)
         safe_norms = mx.maximum(norms, mx.array(1e-8, dtype=mx.float32))
 
         # 2. Normalize to unit sphere.
-        x_norm = (x.astype(mx.float32) / safe_norms)  # (B, H, S, D)
+        x_norm = x_f32 / safe_norms  # (B, H, S, D)
 
-        # 3. Random rotation: reshape for batched matmul, then restore.
-        # x_flat: (B*H*S, D)
+        # 3. Random rotation.
         x_flat = x_norm.reshape(-1, D)
-        # Π is (D, D); y_flat = x_flat @ Π.T since Π·x = x·Π⊤
         y_flat = x_flat @ self._rotation.T  # (B*H*S, D)
-        y = y_flat.reshape(B, H, S, D)     # (B, H, S, D)
+        y = y_flat.reshape(B, H, S, D)
 
         # 4. Nearest codebook centroid per coordinate.
-        # distances: (B, H, S, D, 2^bits)
         distances = mx.abs(y[..., None] - self._codebook)
-        indices_fp = mx.argmin(distances, axis=-1)  # (B, H, S, D), dtype int32
-        indices = indices_fp.astype(mx.uint8)
+        indices = mx.argmin(distances, axis=-1).astype(mx.uint8)
 
         return indices, norms.astype(mx.float32)
 
-    def _dequantize(self, indices: mx.array, scales: mx.array) -> mx.array:
+    def _dequantize(
+        self, indices: mx.array, scales: mx.array, ch_stds: mx.array | None
+    ) -> mx.array:
         """Reconstruct float16 tensor from TurboQuant_mse indices + scales.
 
         Args:
-            indices: uint8, shape (B, H, S, D)
-            scales:  float32, shape (B, H, S, 1)
+            indices:  uint8, shape (B, H, S, D)
+            scales:   float32, shape (B, H, S, 1)
+            ch_stds:  (D,) float32, or None
 
         Returns:
             float16 tensor, shape (B, H, S, D)
@@ -168,17 +204,23 @@ class TurboQuantMSECache(KVCache):
         B, H, S, D = indices.shape
 
         # 1. Lookup centroids.
-        idx_flat = indices.reshape(-1).astype(mx.int32)  # (B*H*S*D,)
-        y_flat = mx.take(self._codebook, idx_flat)       # (B*H*S*D,) float32
-        y = y_flat.reshape(B, H, S, D)                   # (B, H, S, D)
+        idx_flat = indices.reshape(-1).astype(mx.int32)
+        y_flat = mx.take(self._codebook, idx_flat)
+        y = y_flat.reshape(B, H, S, D)
 
-        # 2. Inverse rotation: y_hat = y @ Π  (since Π⁻¹ = Π⊤, so x̃ = Π⊤·ỹ = ỹ @ Π)
+        # 2. Inverse rotation.
         y2 = y.reshape(-1, D)
-        x_hat_flat = y2 @ self._rotation        # (B*H*S, D)
+        x_hat_flat = y2 @ self._rotation
         x_hat = x_hat_flat.reshape(B, H, S, D)
 
-        # 3. Rescale and return float16.
-        return (x_hat * scales).astype(mx.float16)
+        # 3. L2 rescale.
+        x_hat = x_hat * scales
+
+        # 4. Undo per-channel normalization.
+        if ch_stds is not None:
+            x_hat = x_hat * ch_stds
+
+        return x_hat.astype(mx.float16)
 
     # ------------------------------------------------------------------
     # Protocol
@@ -199,8 +241,8 @@ class TurboQuantMSECache(KVCache):
         head_dim = keys.shape[-1]
         self._init_if_needed(head_dim)
 
-        k_idx, k_scale = self._quantize(keys)
-        v_idx, v_scale = self._quantize(values)
+        k_idx, k_scale = self._quantize(keys, self._k_ch_stds)
+        v_idx, v_scale = self._quantize(values, self._v_ch_stds)
 
         if self._k_indices is None:
             self._k_indices = k_idx
@@ -216,8 +258,8 @@ class TurboQuantMSECache(KVCache):
         # Keep offset in sync so make_mask produces correct causal masks.
         self.offset += keys.shape[2]
 
-        full_keys = self._dequantize(self._k_indices, self._k_scales)
-        full_values = self._dequantize(self._v_indices, self._v_scales)
+        full_keys = self._dequantize(self._k_indices, self._k_scales, self._k_ch_stds)
+        full_values = self._dequantize(self._v_indices, self._v_scales, self._v_ch_stds)
         return full_keys, full_values
 
     @property
