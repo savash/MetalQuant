@@ -57,25 +57,32 @@ accuracy than INT8, generation quality matches uncompressed baseline exactly.
 - [ ] Cache diagnosis/calibration results per model so users do not repeat setup work
 - [ ] Publish a simple "Which backend should I use?" flow for new users
 
-## Phase 7 — Bit Packing
+## Phase 7 — Workflow Productization (Next)
+- [ ] Persist model-specific diagnosis and calibration artifacts so setup is one-time instead of per session
+- [ ] Upgrade `auto` selection from heuristics to measured model-state decisions wherever possible
+- [ ] Add a drop-in MLX integration path so users can adopt MetalQuant without rewriting their inference loop
+- [ ] Add a one-command "prepare this model" workflow that diagnoses, calibrates if needed, and explains the chosen backend
+- [ ] Save and summarize benchmark runs in a way that makes backend comparisons obvious to new users
+
+## Phase 8 — Bit Packing
 - [ ] Pack 2-bit indices: 4 indices per byte instead of 1
 - [ ] TQ2: 128 bytes + 4 = 132 today → 32 bytes + 4 = 36 bytes (realise full 7.1× compression)
 - [ ] TQ4: 128 bytes + 4 = 132 today → 64 bytes + 4 = 68 bytes (realise full 3.8×)
 - [ ] Re-benchmark unpacked vs packed storage so README numbers stay precise
 
-## Phase 8 — Rigorous Quality Evaluation
+## Phase 9 — Rigorous Quality Evaluation
 - [ ] WikiText-2 perplexity for all backends
 - [ ] HumanEval pass@1 for coding quality
 - [ ] Formal quality vs compression curve
 
-## Phase 9 — Broader Model Coverage
+## Phase 10 — Broader Model Coverage
 - [ ] Qwen2.5-Coder-14B (larger 4-bit model — test fp16-outlier generalisation)
 - [ ] Mistral-7B-8bit
 - [ ] Gemma-3-12B
 - [ ] Document which model families are safe for standard TurboQuant vs needing fp16-outlier
 - [ ] Publish a simple backend-selection matrix by model family
 
-## Phase 10 — Publication
+## Phase 11 — Publication
 - [ ] Blog post with benchmark methodology and findings
 - [ ] "Check your model" guide (KV norm diagnostic)
 - [ ] Contribution guidelines
