@@ -2,8 +2,37 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
+import os
+import subprocess
+import sys
 
 from metalquant.diagnose import diagnose_backend
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _script_env() -> dict[str, str]:
+    root = _repo_root()
+    src = str(root / "src")
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{src}{os.pathsep}{existing}" if existing else src
+    return env
+
+
+def _run_repo_script(script_name: str, script_args: list[str]) -> int:
+    root = _repo_root()
+    script_path = root / "benchmarks" / script_name
+    completed = subprocess.run(
+        [sys.executable, str(script_path), *script_args],
+        cwd=root,
+        env=_script_env(),
+        check=False,
+    )
+    return completed.returncode
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -17,6 +46,24 @@ def _build_parser() -> argparse.ArgumentParser:
     diagnose_parser.add_argument("--model", default=None, help="Model identifier, e.g. mlx-community/Meta-Llama-3.1-8B-Instruct-8bit")
     diagnose_parser.add_argument("--kv-norm", type=float, default=None, help="Measured mean KV norm")
     diagnose_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+
+    calibrate_parser = subparsers.add_parser(
+        "calibrate",
+        help="Run calibration for outlier-aware backends",
+    )
+    calibrate_parser.add_argument("--model", required=True, help="Model identifier to calibrate")
+    calibrate_parser.add_argument("--n-outlier", type=int, default=32, help="Number of outlier channels to keep")
+    calibrate_parser.add_argument("--out", default="results/calibration.json", help="Output JSON path")
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Run the benchmark suite for a chosen cache backend",
+    )
+    benchmark_parser.add_argument("--model", required=True, help="Model identifier to benchmark")
+    benchmark_parser.add_argument("--cache-backend", default="baseline", help="Cache backend to use")
+    benchmark_parser.add_argument("--max-new-tokens", type=int, default=64, help="Decode token count per prompt")
+    benchmark_parser.add_argument("--calibration", default=None, help="Calibration JSON path for outlier-aware backends")
+    benchmark_parser.add_argument("--out", default="results/experiment.json", help="Output JSON path")
 
     return parser
 
@@ -44,6 +91,34 @@ def main(argv: list[str] | None = None) -> int:
         for item in diagnosis.next_steps:
             print(f"- {item}")
         return 0
+
+    if args.command == "calibrate":
+        return _run_repo_script(
+            "run_calibrate.py",
+            [
+                "--model",
+                args.model,
+                "--n-outlier",
+                str(args.n_outlier),
+                "--out",
+                args.out,
+            ],
+        )
+
+    if args.command == "benchmark":
+        script_args = [
+            "--model",
+            args.model,
+            "--cache-backend",
+            args.cache_backend,
+            "--max-new-tokens",
+            str(args.max_new_tokens),
+            "--out",
+            args.out,
+        ]
+        if args.calibration:
+            script_args.extend(["--calibration", args.calibration])
+        return _run_repo_script("run_experiment.py", script_args)
 
     parser.error(f"Unknown command: {args.command}")
     return 2

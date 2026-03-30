@@ -110,6 +110,24 @@ source scripts/activate.sh
 | `tq2` | Healthy 8-bit models where maximum compression matters most | More aggressive compression, still model-dependent |
 | `fp16-outlier` | 4-bit models with inflated KV norms | Better quality than INT8 on problematic models, but less compression than ideal TQ |
 
+### CLI commands
+
+```bash
+# Recommend a backend from model metadata or measured norms
+metalquant diagnose --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
+
+# Run calibration for 4-bit models that need the outlier-aware path
+metalquant calibrate \
+  --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+  --out results/calibration.json
+
+# Run a benchmark through the CLI
+metalquant benchmark \
+  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
+  --cache-backend tq4 \
+  --out results/tq4.json
+```
+
 ### Run the benchmark
 
 ```bash
