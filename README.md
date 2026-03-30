@@ -4,15 +4,7 @@
 
 MetalQuant implements and validates the [TurboQuant algorithm](https://arxiv.org/abs/2504.19874) on MLX, making it practical for developers running models on a 16GB Mac. We also document a critical failure mode the paper doesn't mention — and the fix for it.
 
-The short version: this repo is about getting more useful context per GB on Apple Silicon without hand-wavy quality claims. The emphasis is practical, measurable local inference, not just reproducing a paper in isolation.
-
----
-
-## What this does
-
-When an LLM generates text, it stores a running memory of the conversation called a **KV cache**. On a 16GB Mac, this cache fills up fast — typically limiting you to a few thousand tokens of context.
-
-MetalQuant compresses the KV cache while keeping output quality intact, letting you run longer conversations and larger contexts on the same hardware.
+The short version: this repo is about getting more useful context per GB on Apple Silicon without hand-wavy quality claims. The emphasis is practical local inference, not just reproducing a paper in isolation.
 
 ## Current status
 
@@ -32,49 +24,12 @@ MetalQuant compresses the KV cache while keeping output quality intact, letting 
 
 > **Note**: compression numbers assume bit-packed index storage. The algorithm is fully implemented and validated; bit packing is the remaining engineering step to realise the full numbers in practice.
 
----
+## What matters
 
-## Key findings
-
-### 1. TurboQuant works on Apple Silicon
-
-At 2-bit (TQ2), the KV cache shrinks by **7.1×** and the model still generates correct, coherent code. At 4-bit (TQ4), output is nearly identical to the uncompressed baseline.
-
-### 2. It silently fails on 4-bit weight-quantized models
-
-This is something the paper doesn't cover. When you run TurboQuant on a 4-bit weight-quantized model (e.g. `Qwen2.5-7B-Instruct-4bit`), it produces garbage output with no warning.
-
-**Root cause**: 4-bit weight quantization inflates KV vector norms from ~18 to ~274. TurboQuant's reconstruction error scales as `norm²`, making it 72× worse than INT8 at that point.
-
-**Diagnostic**: before using any TurboQuant backend, check your model's KV norms:
-
-```python
-# norms should be < 50 for TurboQuant to work correctly
-# norms > 50 indicate 4-bit weight quantization artifacts
-```
-
-See `docs/DEVLOG.md` for the full diagnostic script.
-
-### 3. Fix for 4-bit models: fp16-outlier + TQ
-
-For models with inflated KV norms, we developed `TurboQuantFp16OutlierCache`:
-- Run a calibration pass to identify the 32 highest-variance channels
-- Store those 32 channels at full fp16 precision (they hold all the large-norm energy)
-- Apply TurboQuant to the remaining 96 channels (norms ~15, compression works)
-
-Result on `Qwen2.5-7B-4bit`: **4.6× better reconstruction accuracy than INT8**, generation quality matches the uncompressed baseline.
-
-### 4. The goal is practical local inference, not just paper replication
-
-This project is trying to answer a concrete question:
-
-> On a memory-limited Apple Silicon machine, how much more useful context can we get without breaking generation quality?
-
-That means the important outputs here are:
-- reproducible benchmarks
-- model-specific guidance
-- clear failure modes
-- implementation details that can be reused in real MLX workflows
+- Healthy 8-bit models can use standard TurboQuant well.
+- Many 4-bit models need `fp16-outlier` because KV norms are too large.
+- The CLI is now the main entry point for diagnose, calibrate, benchmark, and generate.
+- Bit packing is still the main missing engineering step before the headline compression ratios are fully realized in memory.
 
 ---
 
@@ -145,35 +100,23 @@ metalquant generate \
 python -m metalquant diagnose --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
 ```
 
-### Run the benchmark
+### Raw benchmark scripts
 
 ```bash
-# Baseline — no compression
+# Baseline
 python benchmarks/run_experiment.py \
   --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
   --cache-backend baseline \
   --out results/baseline.json
 
-# INT8 compression (~2× smaller KV cache)
-python benchmarks/run_experiment.py \
-  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
-  --cache-backend int8 \
-  --out results/int8.json
-
-# TQ4 compression (~4× smaller KV cache)
+# TQ4
 python benchmarks/run_experiment.py \
   --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
   --cache-backend tq4 \
   --out results/tq4.json
 
-# TQ2 compression (~7× smaller KV cache)
-python benchmarks/run_experiment.py \
-  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
-  --cache-backend tq2 \
-  --out results/tq2.json
-
-# Compare any two results
-python benchmarks/compare_results.py results/baseline.json results/tq2.json
+# Compare two runs
+python benchmarks/compare_results.py results/baseline.json results/tq4.json
 ```
 
 ### Run the lightweight test suite
@@ -182,20 +125,18 @@ python benchmarks/compare_results.py results/baseline.json results/tq2.json
 python -m pytest
 ```
 
-### For 4-bit models (Qwen, Mistral-4bit, etc.)
+### For 4-bit models
 
 ```bash
-# Step 1: calibrate to identify outlier channels
-python benchmarks/run_calibrate.py \
+# Preferred CLI flow
+metalquant calibrate \
   --model mlx-community/Qwen2.5-7B-Instruct-4bit \
-  --out results/calibration.json
+  --out results/calibration-qwen2-5-7b-instruct-4bit.json
 
-# Step 2: run with the fp16-outlier backend
-python benchmarks/run_experiment.py \
+metalquant benchmark \
   --model mlx-community/Qwen2.5-7B-Instruct-4bit \
   --cache-backend fp16-outlier \
-  --calibration results/calibration.json \
-  --out results/fp16-outlier.json
+  --calibration results/calibration-qwen2-5-7b-instruct-4bit.json
 ```
 
 ---
@@ -213,52 +154,11 @@ mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
 
 ---
 
-## Repository layout
+## Documentation
 
-```
-MetalQuant/
-├── benchmarks/
-│   ├── run_experiment.py     # benchmark runner (all backends)
-│   ├── run_calibrate.py      # outlier channel calibration
-│   ├── compare_results.py    # diff two result JSONs
-│   └── prompts.py
-├── docs/
-│   ├── DEVLOG.md             # full research journal — what worked, what didn't, why
-│   ├── ARCHITECTURE.md
-│   └── ROADMAP.md
-├── results/                  # benchmark outputs (gitignored)
-├── scripts/
-│   ├── activate.sh          # local-only env/cache activation
-│   └── bootstrap.sh         # create local Python env and install package
-├── tests/                    # lightweight unit tests for non-MLX logic
-└── src/metalquant/
-    ├── cache.py              # backend factory: make_cache(model, backend="tq2")
-    ├── cache_quantized.py    # INT8 backend
-    ├── cache_turboquant.py   # TurboQuant core (Q_mse algorithm)
-    ├── cache_turboquant_v2.py # outlier-aware TurboQuant
-    ├── cache_fp16outlier.py  # fp16 outlier + TQ regular (fix for 4-bit models)
-    └── calibrate.py          # per-channel variance calibration
-```
-
----
-
-## How to use the cache backends in your own code
-
-```python
-import mlx.core as mx
-from mlx_lm import load
-from metalquant.cache import make_cache
-
-model, tokenizer = load("mlx-community/Meta-Llama-3.1-8B-Instruct-8bit")
-
-# Pick a backend: "baseline", "int8", "tq2", "tq4", "fp16-outlier"
-cache = make_cache(model, backend="tq2")
-
-# Use exactly like a normal mlx-lm cache
-prompt = "Explain KV cache compression in one paragraph."
-input_ids = mx.array(tokenizer.encode(prompt))[None]
-logits = model(input_ids, cache=cache)
-```
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — high-level system layout
+- [docs/ROADMAP.md](docs/ROADMAP.md) — current phases and next steps
+- [docs/DEVLOG.md](docs/DEVLOG.md) — detailed research journal
 
 ---
 

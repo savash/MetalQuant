@@ -22,7 +22,8 @@ The TurboQuant paper ([arXiv 2504.19874](https://arxiv.org/abs/2504.19874)) clai
 
 **Goal**: establish a reproducible measurement baseline before changing anything.
 
-Built `run_baseline.py`, a prompts module, JSON result format, and `compare_results.py`.
+Built the first benchmark runner, a prompts module, JSON result format, and `compare_results.py`.
+That runner was later consolidated into `benchmarks/run_experiment.py`.
 Committed to measuring everything before and after each change — no guessing.
 
 **Stack choice**: MLX / mlx-lm. It's the native Apple Silicon framework, uses Metal GPU

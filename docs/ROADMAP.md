@@ -54,12 +54,11 @@ accuracy than INT8, generation quality matches uncompressed baseline exactly.
 ## Phase 6 — Usability Layer ✅
 - [x] Ship a user-facing CLI with `metalquant diagnose`, `metalquant calibrate`, `metalquant benchmark`, and `metalquant generate`
 - [x] Add an initial `auto` backend-selection path based on model metadata, KV norms, and calibration artifacts
-- [ ] Cache diagnosis/calibration results per model so users do not repeat setup work
-- [ ] Publish a simple "Which backend should I use?" flow for new users
 
 ## Phase 7 — Workflow Productization (Next)
 - [ ] Persist model-specific diagnosis and calibration artifacts so setup is one-time instead of per session
 - [ ] Upgrade `auto` selection from heuristics to measured model-state decisions wherever possible
+- [ ] Publish a simple "Which backend should I use?" flow for new users
 - [ ] Add a drop-in MLX integration path so users can adopt MetalQuant without rewriting their inference loop
 - [ ] Add a one-command "prepare this model" workflow that diagnoses, calibrates if needed, and explains the chosen backend
 - [ ] Save and summarize benchmark runs in a way that makes backend comparisons obvious to new users

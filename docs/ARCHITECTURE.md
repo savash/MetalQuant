@@ -2,38 +2,21 @@
 
 ## Intent
 
-MetalQuant compresses the KV cache of local LLMs running on Apple Silicon via MLX,
-enabling longer context windows on memory-constrained hardware (e.g. 16GB M4 Mac Mini).
+MetalQuant is a local-first MLX toolkit for KV-cache compression on Apple Silicon.
 
-The project implements and validates TurboQuant (arXiv 2504.19874) and documents
-a critical failure mode for 4-bit weight-quantized models along with its fix.
-
-The architectural goal is not just "compress the cache". It is to build a practical
-local-inference toolkit that answers:
-- which cache backend should be used for a given model family
-- how much memory is actually saved
-- when compression stops being trustworthy
+The project has three jobs:
+- provide KV-cache backends that can drop into MLX workflows
+- measure whether those backends are actually worth using
+- guide users toward a safe backend for a given model
 
 ---
 
-## Layers
+## Core pieces
 
-### 1. Benchmark layer
-`benchmarks/`
-- Reproducible prompt suites (`prompts.py`)
-- Experiment runner with pluggable backends (`run_experiment.py`)
-- Calibration runner for outlier channel identification (`run_calibrate.py`)
-- Result comparison utility (`compare_results.py`)
-- All results written as JSON for scripted diffing
+### 1. Backends
 
-This layer exists to keep the project honest. Every backend decision should be testable
-as a measurable change in cache size, decode speed, and output quality.
-
-### 2. Cache backend layer
-`src/metalquant/`
-
-The central abstraction is `make_cache(model, backend, calibration)` in `cache.py`.
-It returns a list of KVCache-compatible objects, one per transformer layer.
+The core abstraction is `make_cache(model, backend, calibration)` in `src/metalquant/cache.py`.
+It returns one KV-cache object per transformer layer.
 
 | Backend | File | Use case |
 |---|---|---|
@@ -43,62 +26,48 @@ It returns a list of KVCache-compatible objects, one per transformer layer.
 | `tq-outlier` | `cache_turboquant_v2.py` | Experimental mixed-precision variant |
 | `fp16-outlier` | `cache_fp16outlier.py` | 4-bit weight-quantized models — best quality fix |
 
-All backends implement the mlx-lm `KVCache` protocol:
-- `update_and_fetch(keys, values)` — compress new tokens, return full decompressed cache
-- `self.offset` — must be incremented by `keys.shape[2]` every call (mask correctness)
-- Avoid `self.bits` as an attribute name (conflicts with mlx-lm internals)
+All custom backends have to behave like mlx-lm `KVCache` objects, especially around
+`update_and_fetch(...)` and `self.offset`.
 
-### 3. Calibration layer
-`src/metalquant/calibrate.py`
+### 2. Calibration
 
-Required by `fp16-outlier` and `tq-outlier` backends. Runs a forward pass on a small
-set of prompts, measures per-channel variance of K/V vectors at each layer, and returns:
-- Top-N highest-variance channel indices (outlier channels)
-- Per-channel standard deviations for K and V
+`src/metalquant/calibrate.py` measures per-layer channel variance and produces the
+artifacts needed by the outlier-aware backends.
 
-### 4. Profiling and reporting layer
-- Decode timing and throughput measurement in `run_experiment.py`
-- Cache size tracked via `backend.nbytes`
-- JSON outputs in `results/` (gitignored — regenerate with benchmark scripts)
+### 3. Benchmarking
 
-### 5. Local-first environment layer
-`scripts/`
+`benchmarks/run_experiment.py` and `benchmarks/compare_results.py` are the honesty layer.
+They track throughput, cache size, and outputs in JSON so backend claims stay measurable.
 
-- `bootstrap.sh` creates a project-local Python environment
-- `activate.sh` activates the environment and redirects `uv` / Hugging Face caches into `./.cache`
+### 4. CLI
 
-This keeps setup, package caches, and future model downloads as close to the project
-folder as practical so the workspace is easier to audit, move, or remove.
+`src/metalquant/cli.py` is the user-facing workflow:
+- `diagnose`
+- `calibrate`
+- `benchmark`
+- `generate`
 
----
+The CLI sits on top of the existing benchmark and calibration code instead of replacing it.
 
-## Key Design Decisions
+### 5. Local environment
 
-**Why MLX?** It's the native Apple Silicon framework with Metal GPU support.
-No other stack provides this on Mac without significant overhead.
-
-**Why per-vector L2 normalization in TurboQuant?** The algorithm requires vectors on the
-unit sphere. After rotation, each coordinate is approximately N(0, 1/D), which the
-Max-Lloyd codebook is calibrated for. Large norms amplify reconstruction error as `norm²`.
-
-**Why fp16 for outlier channels?** The 32 highest-variance channels in 4-bit models
-carry essentially all the large-norm energy. Quantizing them (even at 3-bit) still fails
-because the partition norm is ~273 for a vector with full norm ~274. Storing them exactly
-costs 64 bytes but eliminates the norm amplification entirely for the remaining channels.
-
-**Why scatter matmul for channel merge?**
-```python
-full = x_out @ scatter_out + x_reg @ scatter_reg
-```
-This runs entirely on the Metal GPU. The alternative (numpy indexed assignment) requires
-CPU ↔ GPU data transfer on every decode step — a 3× slowdown in practice.
+`scripts/bootstrap.sh` and `scripts/activate.sh` keep the Python environment, package cache,
+and model cache local to the project folder as much as possible.
 
 ---
 
-## Non-Goals
+## Workflow
 
-- Training or fine-tuning
-- Non-Apple backends
-- Quantizing model weights (only KV cache activations)
-- Supporting non-MLX inference stacks
-- Pretending all model families behave the same under aggressive KV compression
+1. Diagnose a model from metadata and optional KV norms.
+2. Calibrate if the model needs the outlier-aware path.
+3. Benchmark or generate with the selected backend.
+4. Compare memory savings against quality and speed.
+
+---
+
+## Non-goals
+
+- training or fine-tuning
+- quantizing model weights
+- non-Apple inference stacks
+- pretending all model families behave the same
