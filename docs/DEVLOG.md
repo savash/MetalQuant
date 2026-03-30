@@ -274,6 +274,72 @@ applied to every prefill token.
 
 ---
 
+## Phase 6 — Making It Usable From the Terminal
+
+After proving the algorithm, the next limitation was usability. The backend work was
+real, but a new user still had to inspect the repo to figure out:
+
+1. which backend was safe for a given model
+2. when calibration was required
+3. which script to run for benchmarking
+4. how to generate text through the recommended path
+
+That was enough for research, but not enough for a project someone could clone and use
+without already knowing the implementation details.
+
+### Goal
+
+Turn the research workflow into a first-pass CLI that exposes the practical decisions we
+learned from the experiments.
+
+### What we built
+
+Added a package entrypoint and four commands:
+
+```bash
+metalquant diagnose
+metalquant calibrate
+metalquant benchmark
+metalquant generate
+```
+
+Each command maps to a concrete step in the workflow:
+
+- `diagnose` recommends `int8`, `tq4`, `tq2`, or `fp16-outlier` from model metadata
+  and optional KV norm measurements
+- `calibrate` runs the outlier-channel calibration pass and writes a model-specific JSON
+- `benchmark` wraps the benchmark runner and can now choose `--cache-backend auto`
+- `generate` uses the same recommendation path and falls back safely when calibration
+  would be required but is not available yet
+
+### Design choices
+
+We kept the first CLI intentionally simple:
+
+- reuse the existing calibration and benchmark scripts instead of building a second
+  execution stack
+- keep the recommendation logic readable and explicit
+- generate model-specific default output paths under `results/`
+- support both `metalquant ...` and `python -m metalquant ...`
+- fail clearly when MLX dependencies are missing instead of dumping a raw traceback
+
+### Result
+
+MetalQuant now has a coherent terminal workflow:
+
+```bash
+metalquant diagnose --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
+metalquant calibrate --model mlx-community/Qwen2.5-7B-Instruct-4bit
+metalquant benchmark --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit --cache-backend auto --kv-norm 18
+metalquant generate --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit --prompt "Explain KV cache compression." --backend auto
+```
+
+This is not the final product yet. The current `auto` path uses heuristics plus optional
+KV norms. The next usability step is persisting diagnosis and calibration results per
+model so the workflow becomes mostly automatic across sessions.
+
+---
+
 ## Summary of Findings
 
 ### Finding 1 — TurboQuant works on Apple Silicon ✅
@@ -320,11 +386,22 @@ print(f"K norm: {mean_norm:.1f} — {'OK for TurboQuant' if mean_norm < 30 else 
 Result on `Qwen2.5-7B-4bit`: 4.6× better reconstruction accuracy than INT8, generation
 quality matches the uncompressed model exactly.
 
+### Finding 4 — A usable interface matters almost as much as the backend work ✅
+
+Once the algorithm was proven, the remaining gap was operational. Developers still needed
+to know which script to run, which backend was safe, and when calibration was required.
+The CLI closes that gap enough for real testing and day-to-day use, turning the project
+from a research repo into a tool with a repeatable workflow.
+
 ---
 
 ## What's Next
 
-**Bit packing** is the single most impactful next step. Currently, a 2-bit TurboQuant
+**Calibration reuse** is the next usability step. The CLI can already recommend and run
+the right flow, but it should cache diagnosis and calibration artifacts per model so users
+do not repeat setup work every time they switch sessions.
+
+**Bit packing** is still the single most impactful algorithmic next step. Currently, a 2-bit TurboQuant
 index is stored in one full byte (uint8). Packing 4 indices per byte would reduce
 TQ2 storage from 132 bytes/vector to 36 bytes/vector — realising the full 7.1× figure.
 The algorithm is proven correct; this is a straightforward engineering task.
