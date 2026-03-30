@@ -66,6 +66,34 @@ def test_cli_calibrate_wraps_benchmark_script(monkeypatch) -> None:
     assert "PYTHONPATH" in captured["env"]
 
 
+def test_cli_calibrate_uses_model_specific_default_output(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(command, cwd, env, check):
+        captured["command"] = command
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr("metalquant.cli.subprocess.run", fake_run)
+
+    exit_code = main(
+        [
+            "calibrate",
+            "--model",
+            "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["command"][2:] == [
+        "--model",
+        "mlx-community/Qwen2.5-7B-Instruct-4bit",
+        "--n-outlier",
+        "32",
+        "--out",
+        "results/calibration-qwen2-5-7b-instruct-4bit.json",
+    ]
+
+
 def test_cli_generate_uses_auto_plan(monkeypatch, capsys) -> None:
     def fake_generate_text(model_name, prompt, backend, kv_norm, calibration_path, max_new_tokens):
         return (
@@ -202,3 +230,51 @@ def test_cli_benchmark_wraps_experiment_script(monkeypatch) -> None:
     assert Path(captured["cwd"]).name == "MetalQuant"
     assert captured["check"] is False
     assert "PYTHONPATH" in captured["env"]
+
+
+def test_cli_benchmark_auto_selects_backend_and_default_output(monkeypatch, capsys) -> None:
+    captured = {}
+
+    def fake_run(command, cwd, env, check):
+        captured["command"] = command
+        return type("Completed", (), {"returncode": 0})()
+
+    def fake_resolve_backend_plan(requested_backend, model, kv_norm, calibration_path):
+        return type(
+            "Plan",
+            (),
+            {
+                "selected_backend": "tq4",
+                "confidence": "high",
+                "summary": "Healthy KV norms suggest standard TurboQuant should be safe.",
+                "notes": [],
+            },
+        )()
+
+    monkeypatch.setattr("metalquant.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("metalquant.cli.resolve_backend_plan", fake_resolve_backend_plan)
+
+    exit_code = main(
+        [
+            "benchmark",
+            "--model",
+            "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
+            "--kv-norm",
+            "18",
+        ]
+    )
+
+    captured_output = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Selected backend: tq4" in captured_output.out
+    assert captured["command"][2:] == [
+        "--model",
+        "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
+        "--cache-backend",
+        "tq4",
+        "--max-new-tokens",
+        "64",
+        "--out",
+        "results/meta-llama-3-1-8b-instruct-8bit-tq4.json",
+    ]

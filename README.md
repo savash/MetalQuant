@@ -119,19 +119,30 @@ metalquant diagnose --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
 # Run calibration for 4-bit models that need the outlier-aware path
 metalquant calibrate \
   --model mlx-community/Qwen2.5-7B-Instruct-4bit \
-  --out results/calibration.json
+  --out results/calibration-qwen2-5-7b-instruct-4bit.json
 
-# Run a benchmark through the CLI
+# Run a benchmark through the CLI with an explicit backend
 metalquant benchmark \
   --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
   --cache-backend tq4 \
   --out results/tq4.json
+
+# Or let the CLI choose the backend from model metadata and KV norms
+metalquant benchmark \
+  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
+  --cache-backend auto \
+  --kv-norm 18
+
+# If --out is omitted, MetalQuant writes model-specific result files under results/
 
 # Generate with the automatic backend recommendation path
 metalquant generate \
   --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
   --prompt "Explain KV cache compression in simple terms." \
   --backend auto
+
+# The package also supports module execution
+python -m metalquant diagnose --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
 ```
 
 ### Run the benchmark
@@ -253,8 +264,7 @@ logits = model(input_ids, cache=cache)
 
 ## What's next
 
-- **User-facing CLI** — ship `metalquant diagnose`, `metalquant calibrate`, and `metalquant benchmark` so the repo is usable without reading the source first
-- **Auto backend selection** — recommend or choose `int8`, `tq4`, `tq2`, or `fp16-outlier` from model metadata, KV norms, and cached calibration data
+- **Calibration reuse** — cache diagnosis and calibration artifacts per model so users do not repeat setup work
 - **Bit packing** — pack 2-bit indices into bytes to realise the full 7.1× memory reduction in practice (currently algorithm is correct, storage is not yet packed)
 - **Perplexity benchmarks** — WikiText-2 and HumanEval scores for rigorous quality comparison
 - **Larger models** — test on Qwen2.5-Coder-14B and other coding-focused models

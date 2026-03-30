@@ -51,9 +51,9 @@ accuracy than INT8, generation quality matches uncompressed baseline exactly.
 | TQ4 | 3.76× | 52.5 tok/s | ✅ matches baseline |
 | TQ2 | **7.11×** | 52.9 tok/s | ✅ correct output |
 
-## Phase 6 — Usability Layer (Next)
-- [ ] Ship a user-facing CLI with `metalquant diagnose`, `metalquant calibrate`, and `metalquant benchmark`
-- [ ] Add an `auto` backend-selection path based on model metadata, KV norms, and calibration artifacts
+## Phase 6 — Usability Layer ✅
+- [x] Ship a user-facing CLI with `metalquant diagnose`, `metalquant calibrate`, `metalquant benchmark`, and `metalquant generate`
+- [x] Add an initial `auto` backend-selection path based on model metadata, KV norms, and calibration artifacts
 - [ ] Cache diagnosis/calibration results per model so users do not repeat setup work
 - [ ] Publish a simple "Which backend should I use?" flow for new users
 

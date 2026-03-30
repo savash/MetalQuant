@@ -4,15 +4,29 @@ import argparse
 import json
 from pathlib import Path
 import os
+import re
 import subprocess
 import sys
 
 from metalquant.diagnose import diagnose_backend
-from metalquant.generate import generate_text
+from metalquant.generate import generate_text, resolve_backend_plan
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _model_slug(model_name: str) -> str:
+    tail = model_name.split("/")[-1]
+    return re.sub(r"[^a-zA-Z0-9]+", "-", tail).strip("-").lower() or "model"
+
+
+def _default_calibration_output(model_name: str) -> str:
+    return f"results/calibration-{_model_slug(model_name)}.json"
+
+
+def _default_benchmark_output(model_name: str, backend: str) -> str:
+    return f"results/{_model_slug(model_name)}-{backend}.json"
 
 
 def _script_env() -> dict[str, str]:
@@ -54,17 +68,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     calibrate_parser.add_argument("--model", required=True, help="Model identifier to calibrate")
     calibrate_parser.add_argument("--n-outlier", type=int, default=32, help="Number of outlier channels to keep")
-    calibrate_parser.add_argument("--out", default="results/calibration.json", help="Output JSON path")
+    calibrate_parser.add_argument(
+        "--out",
+        default=None,
+        help="Output JSON path (default: results/calibration-<model>.json)",
+    )
 
     benchmark_parser = subparsers.add_parser(
         "benchmark",
         help="Run the benchmark suite for a chosen cache backend",
     )
     benchmark_parser.add_argument("--model", required=True, help="Model identifier to benchmark")
-    benchmark_parser.add_argument("--cache-backend", default="baseline", help="Cache backend to use")
+    benchmark_parser.add_argument(
+        "--cache-backend",
+        default="auto",
+        choices=["auto", "baseline", "int8", "tq2", "tq3", "tq4", "fp16-outlier", "fp16-outlier-tq2"],
+        help="Cache backend to use (default: auto)",
+    )
+    benchmark_parser.add_argument("--kv-norm", type=float, default=None, help="Measured mean KV norm to improve auto selection")
     benchmark_parser.add_argument("--max-new-tokens", type=int, default=64, help="Decode token count per prompt")
     benchmark_parser.add_argument("--calibration", default=None, help="Calibration JSON path for outlier-aware backends")
-    benchmark_parser.add_argument("--out", default="results/experiment.json", help="Output JSON path")
+    benchmark_parser.add_argument(
+        "--out",
+        default=None,
+        help="Output JSON path (default: results/<model>-<backend>.json)",
+    )
 
     generate_parser = subparsers.add_parser(
         "generate",
@@ -111,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "calibrate":
+        output_path = args.out or _default_calibration_output(args.model)
         return _run_repo_script(
             "run_calibrate.py",
             [
@@ -119,34 +148,62 @@ def main(argv: list[str] | None = None) -> int:
                 "--n-outlier",
                 str(args.n_outlier),
                 "--out",
-                args.out,
+                output_path,
             ],
         )
 
     if args.command == "benchmark":
+        selected_backend = args.cache_backend
+        if args.cache_backend == "auto":
+            plan = resolve_backend_plan(
+                requested_backend="auto",
+                model=args.model,
+                kv_norm=args.kv_norm,
+                calibration_path=args.calibration,
+            )
+            selected_backend = plan.selected_backend
+            print(f"Selected backend: {plan.selected_backend}")
+            print(f"Confidence: {plan.confidence}")
+            print()
+            print(plan.summary)
+            if plan.notes:
+                print()
+                print("Notes:")
+                for item in plan.notes:
+                    print(f"- {item}")
+            print()
+
+        output_path = args.out or _default_benchmark_output(args.model, selected_backend)
         script_args = [
             "--model",
             args.model,
             "--cache-backend",
-            args.cache_backend,
+            selected_backend,
             "--max-new-tokens",
             str(args.max_new_tokens),
             "--out",
-            args.out,
+            output_path,
         ]
         if args.calibration:
             script_args.extend(["--calibration", args.calibration])
         return _run_repo_script("run_experiment.py", script_args)
 
     if args.command == "generate":
-        plan, output_text = generate_text(
-            model_name=args.model,
-            prompt=args.prompt,
-            backend=args.backend,
-            kv_norm=args.kv_norm,
-            calibration_path=args.calibration,
-            max_new_tokens=args.max_new_tokens,
-        )
+        try:
+            plan, output_text = generate_text(
+                model_name=args.model,
+                prompt=args.prompt,
+                backend=args.backend,
+                kv_norm=args.kv_norm,
+                calibration_path=args.calibration,
+                max_new_tokens=args.max_new_tokens,
+            )
+        except ModuleNotFoundError as exc:
+            if exc.name and exc.name.split(".")[0] in {"mlx", "mlx_lm"}:
+                parser.exit(1, "Missing MLX dependencies. Run ./scripts/bootstrap.sh and source scripts/activate.sh.\n")
+            raise
+        except ValueError as exc:
+            parser.exit(2, f"{exc}\n")
         if args.json:
             print(
                 json.dumps(
