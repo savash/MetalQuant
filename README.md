@@ -229,6 +229,8 @@ logits = model(input_ids, cache=cache)
 
 ## What's next
 
+- **User-facing CLI** — ship `metalquant diagnose`, `metalquant calibrate`, and `metalquant benchmark` so the repo is usable without reading the source first
+- **Auto backend selection** — recommend or choose `int8`, `tq4`, `tq2`, or `fp16-outlier` from model metadata, KV norms, and cached calibration data
 - **Bit packing** — pack 2-bit indices into bytes to realise the full 7.1× memory reduction in practice (currently algorithm is correct, storage is not yet packed)
 - **Perplexity benchmarks** — WikiText-2 and HumanEval scores for rigorous quality comparison
 - **Larger models** — test on Qwen2.5-Coder-14B and other coding-focused models
