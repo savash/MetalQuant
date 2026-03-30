@@ -1,0 +1,16 @@
+.claude/
+.venv/
+.venv-test/
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.DS_Store
+.env
+.env.*
+docs/*.pdf
+results/*.json
+results/*.md
+memory.md
