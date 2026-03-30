@@ -126,6 +126,12 @@ metalquant benchmark \
   --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
   --cache-backend tq4 \
   --out results/tq4.json
+
+# Generate with the automatic backend recommendation path
+metalquant generate \
+  --model mlx-community/Meta-Llama-3.1-8B-Instruct-8bit \
+  --prompt "Explain KV cache compression in simple terms." \
+  --backend auto
 ```
 
 ### Run the benchmark

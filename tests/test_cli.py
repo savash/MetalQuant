@@ -66,6 +66,97 @@ def test_cli_calibrate_wraps_benchmark_script(monkeypatch) -> None:
     assert "PYTHONPATH" in captured["env"]
 
 
+def test_cli_generate_uses_auto_plan(monkeypatch, capsys) -> None:
+    def fake_generate_text(model_name, prompt, backend, kv_norm, calibration_path, max_new_tokens):
+        return (
+            type(
+                "Plan",
+                (),
+                {
+                    "selected_backend": "tq4",
+                    "confidence": "medium",
+                    "summary": "8-bit models are often the best fit for standard TurboQuant.",
+                    "rationale": ["Model name suggests 8-bit weights."],
+                    "notes": [],
+                    "to_dict": lambda self: {
+                        "requested_backend": backend,
+                        "selected_backend": "tq4",
+                        "confidence": "medium",
+                        "summary": "8-bit models are often the best fit for standard TurboQuant.",
+                        "rationale": ["Model name suggests 8-bit weights."],
+                        "notes": [],
+                    },
+                },
+            )(),
+            "Generated text",
+        )
+
+    monkeypatch.setattr("metalquant.cli.generate_text", fake_generate_text)
+
+    exit_code = main(
+        [
+            "generate",
+            "--model",
+            "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
+            "--prompt",
+            "Hello",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Selected backend: tq4" in captured.out
+    assert "Output:" in captured.out
+    assert "Generated text" in captured.out
+
+
+def test_cli_generate_prints_json(monkeypatch, capsys) -> None:
+    def fake_generate_text(model_name, prompt, backend, kv_norm, calibration_path, max_new_tokens):
+        return (
+            type(
+                "Plan",
+                (),
+                {
+                    "selected_backend": "int8",
+                    "confidence": "low",
+                    "summary": "Fallback plan.",
+                    "rationale": [],
+                    "notes": ["Auto mode fell back to int8."],
+                    "to_dict": lambda self: {
+                        "requested_backend": backend,
+                        "selected_backend": "int8",
+                        "confidence": "low",
+                        "summary": "Fallback plan.",
+                        "rationale": [],
+                        "notes": ["Auto mode fell back to int8."],
+                    },
+                },
+            )(),
+            "Generated text",
+        )
+
+    monkeypatch.setattr("metalquant.cli.generate_text", fake_generate_text)
+
+    exit_code = main(
+        [
+            "generate",
+            "--model",
+            "mlx-community/Qwen2.5-7B-Instruct-4bit",
+            "--prompt",
+            "Hello",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["plan"]["selected_backend"] == "int8"
+    assert payload["output"] == "Generated text"
+
+
 def test_cli_benchmark_wraps_experiment_script(monkeypatch) -> None:
     captured = {}
 

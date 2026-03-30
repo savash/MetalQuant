@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from metalquant.diagnose import diagnose_backend
+from metalquant.generate import generate_text
 
 
 def _repo_root() -> Path:
@@ -65,6 +66,23 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--calibration", default=None, help="Calibration JSON path for outlier-aware backends")
     benchmark_parser.add_argument("--out", default="results/experiment.json", help="Output JSON path")
 
+    generate_parser = subparsers.add_parser(
+        "generate",
+        help="Generate text with a selected backend or the auto recommendation path",
+    )
+    generate_parser.add_argument("--model", required=True, help="Model identifier to use for generation")
+    generate_parser.add_argument("--prompt", required=True, help="Prompt text")
+    generate_parser.add_argument(
+        "--backend",
+        default="auto",
+        choices=["auto", "baseline", "int8", "tq2", "tq3", "tq4", "fp16-outlier", "fp16-outlier-tq2"],
+        help="Backend to use for generation",
+    )
+    generate_parser.add_argument("--kv-norm", type=float, default=None, help="Measured mean KV norm to improve auto selection")
+    generate_parser.add_argument("--calibration", default=None, help="Calibration JSON path for outlier-aware backends")
+    generate_parser.add_argument("--max-new-tokens", type=int, default=128, help="Maximum number of generated tokens")
+    generate_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+
     return parser
 
 
@@ -119,6 +137,46 @@ def main(argv: list[str] | None = None) -> int:
         if args.calibration:
             script_args.extend(["--calibration", args.calibration])
         return _run_repo_script("run_experiment.py", script_args)
+
+    if args.command == "generate":
+        plan, output_text = generate_text(
+            model_name=args.model,
+            prompt=args.prompt,
+            backend=args.backend,
+            kv_norm=args.kv_norm,
+            calibration_path=args.calibration,
+            max_new_tokens=args.max_new_tokens,
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "plan": plan.to_dict(),
+                        "output": output_text,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+
+        print(f"Selected backend: {plan.selected_backend}")
+        print(f"Confidence: {plan.confidence}")
+        print()
+        print(plan.summary)
+        if plan.rationale:
+            print()
+            print("Rationale:")
+            for item in plan.rationale:
+                print(f"- {item}")
+        if plan.notes:
+            print()
+            print("Notes:")
+            for item in plan.notes:
+                print(f"- {item}")
+        print()
+        print("Output:")
+        print(output_text)
+        return 0
 
     parser.error(f"Unknown command: {args.command}")
     return 2
