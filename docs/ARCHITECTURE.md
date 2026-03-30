@@ -8,6 +8,12 @@ enabling longer context windows on memory-constrained hardware (e.g. 16GB M4 Mac
 The project implements and validates TurboQuant (arXiv 2504.19874) and documents
 a critical failure mode for 4-bit weight-quantized models along with its fix.
 
+The architectural goal is not just "compress the cache". It is to build a practical
+local-inference toolkit that answers:
+- which cache backend should be used for a given model family
+- how much memory is actually saved
+- when compression stops being trustworthy
+
 ---
 
 ## Layers
@@ -19,6 +25,9 @@ a critical failure mode for 4-bit weight-quantized models along with its fix.
 - Calibration runner for outlier channel identification (`run_calibrate.py`)
 - Result comparison utility (`compare_results.py`)
 - All results written as JSON for scripted diffing
+
+This layer exists to keep the project honest. Every backend decision should be testable
+as a measurable change in cache size, decode speed, and output quality.
 
 ### 2. Cache backend layer
 `src/metalquant/`
@@ -52,6 +61,15 @@ set of prompts, measures per-channel variance of K/V vectors at each layer, and 
 - Cache size tracked via `backend.nbytes`
 - JSON outputs in `results/` (gitignored — regenerate with benchmark scripts)
 
+### 5. Local-first environment layer
+`scripts/`
+
+- `bootstrap.sh` creates a project-local Python environment
+- `activate.sh` activates the environment and redirects `uv` / Hugging Face caches into `./.cache`
+
+This keeps setup, package caches, and future model downloads as close to the project
+folder as practical so the workspace is easier to audit, move, or remove.
+
 ---
 
 ## Key Design Decisions
@@ -83,3 +101,4 @@ CPU ↔ GPU data transfer on every decode step — a 3× slowdown in practice.
 - Non-Apple backends
 - Quantizing model weights (only KV cache activations)
 - Supporting non-MLX inference stacks
+- Pretending all model families behave the same under aggressive KV compression

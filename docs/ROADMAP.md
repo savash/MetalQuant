@@ -1,5 +1,11 @@
 # MetalQuant Roadmap
 
+## North Star
+
+Make MetalQuant the practical reference implementation for KV-cache compression on
+Apple Silicon MLX: reproducible benchmarks, clear model guidance, and implementation
+paths that can be reused in real local-inference workflows.
+
 ## Phase 1 — Foundation ✅
 - [x] Project scaffold, README, bootstrap flow
 - [x] Baseline benchmark runner
@@ -49,6 +55,7 @@ accuracy than INT8, generation quality matches uncompressed baseline exactly.
 - [ ] Pack 2-bit indices: 4 indices per byte instead of 1
 - [ ] TQ2: 128 bytes + 4 = 132 today → 32 bytes + 4 = 36 bytes (realise full 7.1× compression)
 - [ ] TQ4: 128 bytes + 4 = 132 today → 64 bytes + 4 = 68 bytes (realise full 3.8×)
+- [ ] Re-benchmark unpacked vs packed storage so README numbers stay precise
 
 ## Phase 7 — Rigorous Quality Evaluation
 - [ ] WikiText-2 perplexity for all backends
@@ -60,8 +67,10 @@ accuracy than INT8, generation quality matches uncompressed baseline exactly.
 - [ ] Mistral-7B-8bit
 - [ ] Gemma-3-12B
 - [ ] Document which model families are safe for standard TurboQuant vs needing fp16-outlier
+- [ ] Publish a simple backend-selection matrix by model family
 
 ## Phase 9 — Publication
 - [ ] Blog post with benchmark methodology and findings
 - [ ] "Check your model" guide (KV norm diagnostic)
 - [ ] Contribution guidelines
+- [ ] Short "What to run first" guide for new users

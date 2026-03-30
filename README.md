@@ -4,6 +4,8 @@
 
 MetalQuant implements and validates the [TurboQuant algorithm](https://arxiv.org/abs/2504.19874) on MLX, making it practical for developers running models on a 16GB Mac. We also document a critical failure mode the paper doesn't mention — and the fix for it.
 
+The short version: this repo is about getting more useful context per GB on Apple Silicon without hand-wavy quality claims. The emphasis is practical, measurable local inference, not just reproducing a paper in isolation.
+
 ---
 
 ## What this does
@@ -11,6 +13,13 @@ MetalQuant implements and validates the [TurboQuant algorithm](https://arxiv.org
 When an LLM generates text, it stores a running memory of the conversation called a **KV cache**. On a 16GB Mac, this cache fills up fast — typically limiting you to a few thousand tokens of context.
 
 MetalQuant compresses the KV cache while keeping output quality intact, letting you run longer conversations and larger contexts on the same hardware.
+
+## Current status
+
+- TurboQuant works well on healthy 8-bit MLX models such as `Meta-Llama-3.1-8B-Instruct-8bit`
+- Standard TurboQuant fails on many 4-bit weight-quantized models because KV norms are too large
+- `fp16-outlier` is the current practical fix for those 4-bit models
+- Bit packing is not implemented yet, so the headline compression ratios are algorithmic targets already validated mathematically, not the exact in-memory storage used by the current code
 
 **Measured results on M4 Mac Mini 16GB (`Meta-Llama-3.1-8B-Instruct-8bit`):**
 
@@ -55,6 +64,18 @@ For models with inflated KV norms, we developed `TurboQuantFp16OutlierCache`:
 
 Result on `Qwen2.5-7B-4bit`: **4.6× better reconstruction accuracy than INT8**, generation quality matches the uncompressed baseline.
 
+### 4. The goal is practical local inference, not just paper replication
+
+This project is trying to answer a concrete question:
+
+> On a memory-limited Apple Silicon machine, how much more useful context can we get without breaking generation quality?
+
+That means the important outputs here are:
+- reproducible benchmarks
+- model-specific guidance
+- clear failure modes
+- implementation details that can be reused in real MLX workflows
+
 ---
 
 ## Quick start
@@ -78,6 +99,16 @@ source scripts/activate.sh
 
 `bootstrap.sh` creates a local `.venv`, installs Python 3.11, and installs the package in editable mode.
 `scripts/activate.sh` activates the venv and points `uv` and Hugging Face caches into the project-local `.cache/` directory.
+
+### Choose a backend
+
+| Backend | When to use it | Tradeoff |
+|---|---|---|
+| `baseline` | Reference run, debugging, quality comparisons | No compression |
+| `int8` | Safe default for almost any model | Best stability, smallest quality risk, lower compression |
+| `tq4` | Healthy 8-bit models where you want a strong speed/quality/compression balance | Needs healthy KV norms |
+| `tq2` | Healthy 8-bit models where maximum compression matters most | More aggressive compression, still model-dependent |
+| `fp16-outlier` | 4-bit models with inflated KV norms | Better quality than INT8 on problematic models, but less compression than ideal TQ |
 
 ### Run the benchmark
 
@@ -162,7 +193,8 @@ MetalQuant/
 │   └── ROADMAP.md
 ├── results/                  # benchmark outputs (gitignored)
 ├── scripts/
-│   └── bootstrap.sh
+│   ├── activate.sh          # local-only env/cache activation
+│   └── bootstrap.sh         # create local Python env and install package
 ├── tests/                    # lightweight unit tests for non-MLX logic
 └── src/metalquant/
     ├── cache.py              # backend factory: make_cache(model, backend="tq2")
@@ -201,6 +233,15 @@ logits = model(input_ids, cache=cache)
 - **Perplexity benchmarks** — WikiText-2 and HumanEval scores for rigorous quality comparison
 - **Larger models** — test on Qwen2.5-Coder-14B and other coding-focused models
 - **More architectures** — validate KV norm behaviour across Mistral, Gemma, Phi
+
+## What success looks like
+
+MetalQuant is successful if it becomes a reliable answer to:
+
+- which MLX models are safe for TurboQuant as-is
+- which models need the outlier-aware path
+- what memory reduction is actually achievable in practice
+- how to reproduce those results on a local Apple Silicon machine without hidden setup steps
 
 ---
 
